@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Real Scan + Simulated Attack (Debug-Friendly)</title>
+  <style>
+    body{font-family:Inter,Segoe UI,Roboto,Arial,sans-serif;background:#071018;color:#dbeef3;margin:22px}
+    .wrap{max-width:980px;margin:0 auto}
+    .card{background:#0f1720;padding:18px;border-radius:10px}
+    input,select,button{padding:10px;border-radius:8px;border:none;font-size:14px}
+    input,select{background:#071018;color:#e6eef3}
+    button.primary{background:#00b7c2;color:#001219;font-weight:700;border:none;padding:10px 14px;border-radius:8px}
+    pre{background:#061019;padding:12px;border-radius:8px;white-space:pre-wrap}
+    label{font-size:13px;color:#9aa0a6}
+    .muted{color:#9aa0a6}
+    .grid{display:grid;grid-template-columns:1fr 420px;gap:16px;margin-top:12px}
+    @media(max-width:880px){.grid{grid-template-columns:1fr}}
+    .progress{height:14px;background:#0b1318;border-radius:8px;overflow:hidden;margin-top:12px}
+    .bar{height:100%;width:0;background:linear-gradient(90deg,#00b7c2,#2ecc71);transition:width 3s}
+    .small{font-size:13px;color:#9aa0a6}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h2>Real Scan → Simulated Attack (Debug)</h2>
+      <p class="small">Performs a limited nmap scan (real) and then returns a simulated exploit report (no payloads). Use API key if server requires it.</p>
+
+      <div style="display:flex;gap:10px;align-items:center">
+        <div style="flex:1">
+          <label>Target IP</label><br/>
+          <input id="target" placeholder="e.g., 192.168.56.101" />
+        </div>
+        <div style="width:240px">
+          <label>Exploit (simulated)</label><br/>
+          <select id="exploit">
+            <option value="simulated_exploit">Simulated FTP Backdoor</option>
+            <option value="http_demo">Simulated HTTP RCE (demo)</option>
+          </select>
+        </div>
+        <div style="width:260px">
+          <label>API Key (optional)</label><br/>
+          <input id="apikey" placeholder="Enter API key if required" />
+        </div>
+      </div>
+
+      <div style="display:flex;gap:10px;margin-top:10px">
+        <button id="scanBtn" class="primary">Run Scan</button>
+        <button id="demoBtn" style="background:#213040;color:#e6eef3;border-radius:8px;padding:10px">Use Demo Target</button>
+      </div>
+
+      <div class="grid">
+        <div>
+          <div style="margin-top:12px" class="muted">Scan progress</div>
+          <div class="progress"><div class="bar" id="bar"></div></div>
+          <div style="margin-top:12px" class="muted">Scan output</div>
+          <pre id="scanOut">No scan yet.</pre>
+        </div>
+
+        <div>
+          <div style="margin-top:4px" class="muted">Exploit / Report</div>
+          <pre id="reportOut">No report yet.</pre>
+
+          <div style="margin-top:8px" class="small muted">Diagnostics (helpful if scan timed out)</div>
+          <pre id="diagOut" style="height:140px;overflow:auto">No diagnostics yet.</pre>
+        </div>
+      </div>
+
+      <p class="small muted" style="margin-top:10px">Server: <strong id="serverLabel"></strong></p>
+    </div>
+  </div>
+
+<script>
+  const serverLabel = document.getElementById('serverLabel');
+  serverLabel.innerText = location.origin;
+
+  const scanBtn = document.getElementById('scanBtn');
+  const demoBtn = document.getElementById('demoBtn');
+  const targetEl = document.getElementById('target');
+  const exploitEl = document.getElementById('exploit');
+  const apiKeyEl = document.getElementById('apikey');
+  const bar = document.getElementById('bar');
+  const scanOut = document.getElementById('scanOut');
+  const reportOut = document.getElementById('reportOut');
+  const diagOut = document.getElementById('diagOut');
+
+  demoBtn.addEventListener('click', (e) => {
+    e.preventDefault();
+    targetEl.value = "192.168.56.101";
+    exploitEl.value = "simulated_exploit";
+    apiKeyEl.value = ""; // clear for demo
+  });
+
+  function setProgress(percent) {
+    bar.style.width = percent + "%";
+  }
+
+  async function postJson(path, bodyObj, timeout=45000) {
+    const apiKey = apiKeyEl.value.trim();
+    const headers = {'Content-Type':'application/json'};
+    if (apiKey) headers['X-API-Key'] = apiKey;
+    const controller = new AbortController();
+    const id = setTimeout(()=>controller.abort(), timeout);
+    try {
+      const resp = await fetch(path, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(bodyObj),
+        signal: controller.signal
+      });
+      clearTimeout(id);
+      const contentType = resp.headers.get('content-type') || '';
+      if (!resp.ok) {
+        let payload = null;
+        try { payload = await resp.json(); } catch(e) { payload = await resp.text(); }
+        throw new Error(`HTTP ${resp.status} - ${JSON.stringify(payload)}`);
+      }
+      if (contentType.includes('application/json')) return await resp.json();
+      return { text: await resp.text() };
+    } catch (err) {
+      clearTimeout(id);
+      throw err;
+    }
+  }
+
+  scanBtn.addEventListener('click', async () => {
+    const target = targetEl.value.trim();
+    const exploit = exploitEl.value;
+    if (!target) { alert("Enter target IP"); targetEl.focus(); return; }
+
+    // UI reset
+    scanOut.textContent = "Starting scan...";
+    reportOut.textContent = "Waiting for report...";
+    diagOut.textContent = "Diagnostics will appear here if needed.";
+    setProgress(8);
+
+    try {
+      // perform scan
+      const scanPromise = postJson('/scan', { ip: target }, 90000);
+      // simulate progress visually while scan runs
+      const progressInterval = setInterval(() => {
+        const cur = parseFloat(bar.style.width) || 0;
+        if (cur < 90) setProgress(cur + 6);
+      }, 900);
+
+      const scanResp = await scanPromise;
+      clearInterval(progressInterval);
+      setProgress(100);
+
+      // show scan output
+      scanOut.textContent = scanResp.scan_output || "(no output)";
+
+      // show diagnostics if timed_out or no output
+      if (scanResp.timed_out || !(scanResp.scan_output || "").trim()) {
+        diagOut.textContent = JSON.stringify(scanResp.diagnostics, null, 2);
+      } else {
+        diagOut.textContent = "No issues detected. Diagnostics omitted.";
+      }
+
+      // now request simulated exploit report using scan output
+      reportOut.textContent = "Generating simulated exploit report...";
+      const exploitPayload = { target: target, exploit: exploit, scan_output: scanResp.scan_output || "" };
+      const reportResp = await postJson('/exploit', exploitPayload, 20000);
+
+      // render report nicely
+      const lines = [];
+      lines.push("=== SIMULATED EXPLOIT REPORT ===");
+      lines.push("Report ID: " + (reportResp.id || "(simulated)"));
+      lines.push("Timestamp: " + (reportResp.timestamp || new Date().toISOString()));
+      lines.push("Target: " + (reportResp.target || target));
+      lines.push("Exploit (simulated): " + (reportResp.exploit || exploit));
+      lines.push("");
+      if (reportResp.scan_summary) {
+        lines.push("--- Scan Summary ---");
+        lines.push(reportResp.scan_summary);
+        lines.push("");
+      }
+      if (reportResp.vulnerability) {
+        lines.push("--- Vulnerability ---");
+        lines.push(reportResp.vulnerability);
+        lines.push("");
+      }
+      if (reportResp.outputs && reportResp.outputs.simulated_shell) {
+        lines.push("--- Simulated Shell Output ---");
+        lines.push(reportResp.outputs.simulated_shell);
+        lines.push("");
+      }
+      if (reportResp.recommendations) {
+        lines.push("--- Recommendations ---");
+        reportResp.recommendations.forEach(r => lines.push("- " + r));
+        lines.push("");
+      }
+      lines.push("(Note: This is a simulated exploit.)");
+
+      reportOut.textContent = lines.join("\n");
+
+    } catch (err) {
+      // show error
+      scanOut.textContent = "Scan failed: " + err.message;
+      reportOut.textContent = "";
+      diagOut.textContent = "No diagnostics (request failed).";
+      setProgress(0);
+    }
+  });
+</script>
+</body>
+</html>
+
